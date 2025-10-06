@@ -1,0 +1,106 @@
+# Step 2: Import Libraries
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+from transformers import DistilBertTokenizerFast, TFDistilBertForSequenceClassification
+import tensorflow as tf
+import joblib
+import streamlit as st
+
+# Step 3: Load the Dataset
+url = '/content/Ayurvedic_Medicine_Dataset.xlsx'  # Replace with your file path or GitHub URL
+df = pd.read_excel(url)
+
+# Step 4: Encode Labels
+le = LabelEncoder()
+df['label'] = le.fit_transform(df['Ayurvedic Medicine'])
+
+# Step 5: Tokenization
+tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
+encodings = tokenizer(df['Symptoms'].tolist(), truncation=True, padding=True)
+
+# Step 6: Prepare Dataset
+X = np.array(encodings['input_ids'])
+attention_mask = np.array(encodings['attention_mask'])
+y = np.array(df['label'].tolist())
+
+# Train-test split
+X_train, X_test, attn_train, attn_test, y_train, y_test = train_test_split(
+    X, attention_mask, y, test_size=0.2, random_state=42
+)
+
+# Convert to tensors AFTER the split
+X_train = tf.convert_to_tensor(X_train)
+X_test = tf.convert_to_tensor(X_test)
+attn_train = tf.convert_to_tensor(attn_train)
+attn_test = tf.convert_to_tensor(attn_test)
+y_train = tf.convert_to_tensor(y_train)
+y_test = tf.convert_to_tensor(y_test)
+
+# Step 7: Model Definition
+model = TFDistilBertForSequenceClassification.from_pretrained("distilbert-base-uncased", num_labels=len(le.classes_))
+optimizer = tf.keras.optimizers.Adam(learning_rate=5e-5)
+loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+
+model.compile(optimizer=optimizer, loss=loss, metrics=['accuracy'])
+
+# Step 8: Model Training
+model.fit([X_train, attn_train], y_train, validation_data=([X_test, attn_test], y_test), epochs=3, batch_size=8)
+
+# Step 9: Evaluation
+y_pred = model.predict([X_test, attn_test])
+pred_labels = tf.argmax(y_pred.logits, axis=1)
+
+# Ensure correct label mapping before report
+y_test_np = y_test.numpy() if isinstance(y_test, tf.Tensor) else y_test
+pred_labels_np = pred_labels.numpy() if isinstance(pred_labels, tf.Tensor) else pred_labels
+
+unique_labels = np.unique(np.concatenate([y_test_np, pred_labels_np]))
+target_names = le.inverse_transform(unique_labels)
+
+print(classification_report(y_test_np, pred_labels_np, labels=unique_labels, target_names=target_names))
+
+# Step 10: Save Model & Label Encoder
+model.save_pretrained("ayurvedic_model")
+tokenizer.save_pretrained("ayurvedic_model")
+joblib.dump(le, "label_encoder.joblib")
+
+# Step 11: Interactive Symptom Input for Medicine Prediction in Colab
+from IPython.display import display
+import ipywidgets as widgets
+
+# Input box
+symptom_input = widgets.Text(
+    value='',
+    placeholder='Enter your symptoms...',
+    description='Symptoms:',
+    style={'description_width': 'initial'},
+    layout=widgets.Layout(width='100%')
+)
+
+# Submit button
+submit_button = widgets.Button(description="Get Recommendation", button_style='success')
+
+# Output box
+output = widgets.Output()
+
+# Define the function to run on click
+def on_submit(b):
+    output.clear_output()
+    with output:
+        if symptom_input.value.strip():
+            tokens = tokenizer([symptom_input.value], truncation=True, padding=True, return_tensors="tf")
+            prediction = model.predict([tokens['input_ids'], tokens['attention_mask']])
+            pred_label = tf.argmax(prediction.logits, axis=1).numpy()[0]
+            medicine = le.inverse_transform([pred_label])[0]
+            print("✅ Recommended Ayurvedic Medicine:")
+            print(f"➡️ {medicine}")
+        else:
+            print("⚠️ Please enter your symptoms.")
+
+submit_button.on_click(on_submit)
+
+# Display widgets
+display(symptom_input, submit_button, output)
